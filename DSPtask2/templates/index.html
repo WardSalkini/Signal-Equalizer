@@ -1,0 +1,1586 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signal Equalizer – ECG Mode</title>
+    <meta name="description"
+        content="Signal frequency equalizer with ECG Abnormalities Mode, dual synchronized viewers, spectrograms, and wavelet support">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <script>
+        /* ── Drag-to-pan helper (from reference project) ──────────────────────── */
+        function attachPan(chart) {
+            const canvas = chart.canvas;
+            let dragging = false, startX, startY, xMinS, xMaxS, yMinS, yMaxS;
+            canvas.style.cursor = 'grab';
+            canvas.addEventListener('mousedown', e => {
+                if (e.button !== 0) return;
+                dragging = true; startX = e.clientX; startY = e.clientY;
+                xMinS = chart.scales.x.min; xMaxS = chart.scales.x.max;
+                yMinS = chart.scales.y.min; yMaxS = chart.scales.y.max;
+                canvas.style.cursor = 'grabbing'; e.preventDefault();
+            });
+            window.addEventListener('mousemove', e => {
+                if (!dragging) return;
+                const xs = chart.scales.x, ys = chart.scales.y;
+                const xPx = xs.right - xs.left || 1, yPx = ys.bottom - ys.top || 1;
+                const xR = xMaxS - xMinS, yR = yMaxS - yMinS;
+                const dx = e.clientX - startX, dy = e.clientY - startY;
+                chart.options.scales.x.min = xMinS - (dx / xPx) * xR;
+                chart.options.scales.x.max = xMaxS - (dx / xPx) * xR;
+                chart.options.scales.y.min = yMinS + (dy / yPx) * yR;
+                chart.options.scales.y.max = yMaxS + (dy / yPx) * yR;
+                chart.update('none');
+            });
+            window.addEventListener('mouseup', () => { if (dragging) { dragging = false; canvas.style.cursor = 'grab'; } });
+            canvas.addEventListener('dblclick', () => {
+                chart.options.scales.x.min = chart.options.scales.x.max =
+                    chart.options.scales.y.min = chart.options.scales.y.max = undefined;
+                chart.resetZoom();
+            });
+        }
+    </script>
+    <style>
+        /* ── Reset & Base ──────────────────────────────────────────────────────── */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0c29 0%, #1a1a2e 40%, #16213e 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 16px;
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+
+        /* ── Header ────────────────────────────────────────────────────────────── */
+        .header {
+            text-align: center;
+            margin-bottom: 16px;
+        }
+
+        .header h1 {
+            font-size: 2.1rem;
+            background: linear-gradient(90deg, #00d4ff, #7b2cbf, #ff6b6b);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 4px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 0.85rem;
+        }
+
+        /* ── Top Bar ───────────────────────────────────────────────────────────── */
+        .top-bar {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 16px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 12px;
+            padding: 12px 20px;
+        }
+
+        .top-bar label {
+            font-size: 0.82rem;
+            color: #999;
+        }
+
+        .top-bar select,
+        .top-bar button,
+        .file-label {
+            padding: 7px 14px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.08);
+            color: #ddd;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.25s;
+        }
+
+        .top-bar select:hover,
+        .top-bar button:hover,
+        .file-label:hover {
+            background: rgba(0, 212, 255, 0.15);
+            border-color: rgba(0, 212, 255, 0.4);
+        }
+
+        .top-bar select option {
+            background: #1a1a2e;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .file-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-accent {
+            background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+            color: #fff;
+            border: none;
+            font-weight: 600;
+        }
+
+        .btn-accent:hover {
+            transform: scale(1.04);
+            box-shadow: 0 4px 15px rgba(0, 212, 255, 0.3);
+        }
+
+        .btn-green {
+            background: #28a745;
+            color: #fff;
+            border-color: #28a745;
+        }
+
+        .btn-red {
+            background: #dc3545;
+            color: #fff;
+            border-color: #dc3545;
+        }
+
+        /* ── Main Grid ─────────────────────────────────────────────────────────── */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            gap: 16px;
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+
+        @media (max-width: 900px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* ── Panels ────────────────────────────────────────────────────────────── */
+        .panel {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            padding: 16px;
+            backdrop-filter: blur(10px);
+        }
+
+        .slider-panel {
+            position: sticky;
+            top: 16px;
+            align-self: start;
+            max-height: calc(100vh - 32px);
+            overflow-y: auto;
+        }
+
+        .panel-title {
+            font-size: 1rem;
+            color: #00d4ff;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* ── Slider Panel ──────────────────────────────────────────────────────── */
+        .slider-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .slider-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .slider-group label {
+            font-size: 0.78rem;
+            color: #aaa;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .slider-group label span.val {
+            color: #00d4ff;
+            font-weight: 600;
+        }
+
+        .slider-group input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.12);
+            outline: none;
+            -webkit-appearance: none;
+            cursor: pointer;
+        }
+
+        .slider-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid #111;
+        }
+
+        .slider-desc {
+            font-size: 0.68rem;
+            color: #555;
+            font-style: italic;
+        }
+
+        /* ── Viewers ───────────────────────────────────────────────────────────── */
+        .viewers-area {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .viewer-box {
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: 12px;
+            padding: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .viewer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .viewer-title {
+            font-size: 0.92rem;
+            font-weight: 600;
+        }
+
+        .chart-wrap {
+            height: 220px;
+            position: relative;
+        }
+
+        .chart-wrap canvas {
+            width: 100% !important;
+            height: 100% !important;
+        }
+
+        /* zoom buttons */
+        .zoom-controls {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            z-index: 10;
+            display: flex;
+            gap: 4px;
+        }
+
+        .zoom-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .zoom-btn:hover {
+            background: #00d4ff;
+        }
+
+        .axis-btns {
+            display: flex;
+            gap: 3px;
+            margin-left: 8px;
+            padding-left: 8px;
+            border-left: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .axis-btn {
+            padding: 3px 7px;
+            border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: transparent;
+            color: #aaa;
+            font-size: 0.7rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .axis-btn.active {
+            background: #00d4ff;
+            border-color: #00d4ff;
+            color: #000;
+        }
+
+        /* ── Playback ──────────────────────────────────────────────────────────── */
+        .playback-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .play-btn {
+            padding: 6px 14px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            color: #fff;
+        }
+
+        .play-btn.play {
+            background: #28a745;
+        }
+
+        .play-btn.pause {
+            background: #ffc107;
+            color: #000;
+        }
+
+
+
+        .play-btn.reset {
+            background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+        }
+
+        .play-btn:hover {
+            transform: scale(1.08);
+        }
+
+        .pos-slider {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.15);
+            -webkit-appearance: none;
+            cursor: pointer;
+        }
+
+        .pos-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #00d4ff;
+            cursor: pointer;
+        }
+
+        .time-display {
+            font-size: 0.82rem;
+            color: #00d4ff;
+            min-width: 110px;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .speed-wrap {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .speed-wrap label {
+            font-size: 0.72rem;
+            color: #888;
+        }
+
+        .speed-wrap input {
+            width: 60px;
+        }
+
+        /* ── Audio btns ────────────────────────────────────────────────────────── */
+        .audio-btn {
+            padding: 4px 10px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.06);
+            color: #ccc;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .audio-btn:hover {
+            background: rgba(0, 212, 255, 0.15);
+            border-color: #00d4ff;
+            color: #00d4ff;
+        }
+
+        .audio-btn.playing {
+            background: rgba(220, 53, 69, 0.2);
+            border-color: #dc3545;
+            color: #ff6b6b;
+        }
+
+        /* ── Frequency Display ─────────────────────────────────────────────────── */
+        .freq-box {
+            margin-top: 14px;
+        }
+
+        .freq-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .scale-btns {
+            display: flex;
+            gap: 4px;
+        }
+
+        .scale-btn {
+            padding: 4px 10px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: transparent;
+            color: #aaa;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .scale-btn.active {
+            background: #7b2cbf;
+            border-color: #7b2cbf;
+            color: #fff;
+        }
+
+        .freq-chart-wrap {
+            height: 300px;
+            position: relative;
+        }
+
+        /* ── Spectrogram ───────────────────────────────────────────────────────── */
+        .spectro-section {
+            margin-top: 14px;
+        }
+
+        .spectro-toggle {
+            padding: 5px 14px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.06);
+            color: #aaa;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .spectro-toggle:hover {
+            border-color: #00d4ff;
+            color: #00d4ff;
+        }
+
+        .spectro-toggle.active {
+            background: rgba(0, 212, 255, 0.12);
+            border-color: #00d4ff;
+            color: #00d4ff;
+        }
+
+        .spectro-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-top: 10px;
+        }
+
+        .spectro-box canvas {
+            width: 100% !important;
+            height: 200px !important;
+            border-radius: 8px;
+        }
+
+        .spectro-label {
+            font-size: 0.75rem;
+            color: #888;
+            margin-bottom: 4px;
+        }
+
+        /* ── Info bar ──────────────────────────────────────────────────────────── */
+        .info-bar {
+            font-size: 0.78rem;
+            color: #666;
+            text-align: center;
+            margin-top: 6px;
+            padding: 4px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+        }
+
+        /* ── Settings import/export ────────────────────────────────────────────── */
+        .settings-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .settings-btn {
+            padding: 5px 12px;
+            border-radius: 7px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(255, 255, 255, 0.05);
+            color: #aaa;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .settings-btn:hover {
+            border-color: #a55eea;
+            color: #a55eea;
+        }
+
+        /* ── Status pill ───────────────────────────────────────────────────────── */
+        .status-pill {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.72rem;
+            font-weight: 600;
+        }
+
+        .status-pill.playing {
+            background: rgba(40, 167, 69, 0.2);
+            color: #26de81;
+        }
+
+        .status-pill.paused {
+            background: rgba(108, 117, 125, 0.2);
+            color: #888;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- ── Header ──────────────────────────────────────────────────────────── -->
+    <div class="header">
+        <h1>⚡ Signal Equalizer</h1>
+        <p>Scroll to zoom · Drag to pan · Double-click to reset · ECG Abnormalities Mode</p>
+    </div>
+
+    <!-- ── Top Control Bar ─────────────────────────────────────────────────── -->
+    <div class="top-bar">
+        <label>📂 Signal:</label>
+        <label class="file-label" for="fileInput">📁 Upload ECG
+            <input type="file" id="fileInput" class="file-input" accept=".csv,.dat" onchange="loadFile(event)">
+        </label>
+
+
+        <label class="file-label" for="settingsInput">📥 Load Settings
+            <input type="file" id="settingsInput" class="file-input" accept=".txt,.json"
+                onchange="loadSettingsFile(event)">
+        </label>
+        <button class="settings-btn" onclick="saveSettings()">💾 Save Settings</button>
+    </div>
+
+    <!-- ── Main Layout ─────────────────────────────────────────────────────── -->
+    <div class="main-grid">
+        <!-- ── Left: Equalizer Sliders ────────────────────────────────────── -->
+        <div class="panel slider-panel" id="sliderPanel">
+            <div class="panel-title">🎚️ ECG Equalizer</div>
+            <div id="slidersContainer"></div>
+            <div class="slider-group" style="margin-top:10px;">
+                <label><span style="color:#a55eea;">🔬 Transform</span></label>
+                <select id="transformSelect" onchange="onTransformChange()"
+                    style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:#1a1a2e;color:#ddd;font-size:0.85rem;cursor:pointer;">
+                    <option value="fourier" style="background:#1a1a2e;">Fourier (FFT)</option>
+                    <option value="db4" style="background:#1a1a2e;">Daubechies-4 (db4)</option>
+                    <option value="sym5" style="background:#1a1a2e;">Symlet-5 (sym5)</option>
+                    <option value="coif3" style="background:#1a1a2e;">Coiflet-3 (coif3)</option>
+                </select>
+            </div>
+            <button class="settings-btn" style="width:100%;margin-top:10px;padding:8px;font-size:0.82rem;"
+                onclick="resetEqualizer()">↺ Reset Equalizer</button>
+            <div class="info-bar" id="infoBar">No signal loaded</div>
+        </div>
+
+        <!-- ── Right: Viewers + Spectrograms ──────────────────────────────── -->
+        <div class="viewers-area">
+            <!-- Input Viewer -->
+            <div class="viewer-box">
+                <div class="viewer-header">
+                    <span class="viewer-title" style="color:#00d4ff;">📥 Input Signal</span>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <button class="audio-btn" id="audioInBtn" onclick="toggleAudio('input')">🔊 Play Audio</button>
+                    </div>
+                </div>
+                <div class="chart-wrap" id="inputChartWrap">
+                    <div class="zoom-controls">
+                        <button class="zoom-btn" onclick="zoomIn('input')">+</button>
+                        <button class="zoom-btn" onclick="zoomOut('input')">−</button>
+                        <button class="zoom-btn" onclick="resetZoom('input')">↺</button>
+                        <div class="axis-btns">
+                            <button class="axis-btn active" onclick="setZoomAxis('input','xy',this)">XY</button>
+                            <button class="axis-btn" onclick="setZoomAxis('input','x',this)">X</button>
+                            <button class="axis-btn" onclick="setZoomAxis('input','y',this)">Y</button>
+                        </div>
+                    </div>
+                    <canvas id="inputChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Output Viewer -->
+            <div class="viewer-box">
+                <div class="viewer-header">
+                    <span class="viewer-title" style="color:#26de81;">📤 Output Signal</span>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <button class="audio-btn" id="audioOutBtn" onclick="toggleAudio('output')">🔊 Play
+                            Audio</button>
+                    </div>
+                </div>
+                <div class="chart-wrap" id="outputChartWrap">
+                    <div class="zoom-controls">
+                        <button class="zoom-btn" onclick="zoomIn('output')">+</button>
+                        <button class="zoom-btn" onclick="zoomOut('output')">−</button>
+                        <button class="zoom-btn" onclick="resetZoom('output')">↺</button>
+                        <div class="axis-btns">
+                            <button class="axis-btn active" onclick="setZoomAxis('output','xy',this)">XY</button>
+                            <button class="axis-btn" onclick="setZoomAxis('output','x',this)">X</button>
+                            <button class="axis-btn" onclick="setZoomAxis('output','y',this)">Y</button>
+                        </div>
+                    </div>
+                    <canvas id="outputChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Shared Playback Controls -->
+            <div class="viewer-box" style="padding:10px 16px;">
+                <div class="playback-bar">
+                    <button class="play-btn play" onclick="play()">▶</button>
+                    <button class="play-btn pause" onclick="pause()">⏸</button>
+                    <button class="play-btn reset" onclick="resetPlayback()">↺</button>
+                    <input type="range" class="pos-slider" id="posSlider" min="0" max="100" value="0"
+                        oninput="setPosition(this.value)">
+                    <div class="speed-wrap">
+                        <label>Speed:</label>
+                        <input type="range" min="0.1" max="5" step="0.1" value="1" oninput="setSpeed(this.value)"
+                            title="Playback speed">
+                        <span id="speedVal" style="color:#00d4ff;font-size:0.78rem;min-width:28px;">1×</span>
+                    </div>
+                    <div class="speed-wrap">
+                        <label>Window(s):</label>
+                        <input type="range" id="windowSlider" min="0.5" max="20" step="0.1" value="4"
+                            oninput="setWindowSize(this.value)" title="Window size in seconds">
+                        <span id="windowVal" style="color:#a55eea;font-size:0.78rem;min-width:28px;">4.0s</span>
+                    </div>
+                    <div class="time-display">
+                        <span class="status-pill paused" id="statusPill">⏹ Stopped</span>
+                        <div id="timeDisplay">0.00s / 0.00s</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Frequency Display -->
+            <div class="viewer-box freq-box">
+                <div class="freq-header">
+                    <span class="viewer-title" style="color:#a55eea;">📊 Frequency Spectrum</span>
+                    <div style="display:flex;gap:12px;align-items:center;">
+                        <div class="speed-wrap">
+                            <label>Max Freq:</label>
+                            <input type="range" id="freqWindowSlider" min="10" max="500" step="5" value="250"
+                                oninput="setFreqWindow(this.value)" title="Max frequency to display">
+                            <span id="freqWindowVal" style="color:#a55eea;font-size:0.78rem;min-width:40px;">250
+                                Hz</span>
+                        </div>
+                        <div class="scale-btns">
+                            <button class="scale-btn active" onclick="setFreqScale('linear',this)">Linear</button>
+                            <button class="scale-btn" onclick="setFreqScale('audiogram',this)">Audiogram</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="freq-chart-wrap">
+                    <div class="zoom-controls">
+                        <button class="zoom-btn" onclick="freqZoomIn()">+</button>
+                        <button class="zoom-btn" onclick="freqZoomOut()">−</button>
+                        <button class="zoom-btn" onclick="freqResetZoom()">↺</button>
+                        <div class="axis-btns">
+                            <button class="axis-btn active" onclick="setFreqZoomAxis('xy',this)">XY</button>
+                            <button class="axis-btn" onclick="setFreqZoomAxis('x',this)">X</button>
+                            <button class="axis-btn" onclick="setFreqZoomAxis('y',this)">Y</button>
+                        </div>
+                    </div>
+                    <canvas id="freqChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Spectrograms -->
+            <div class="viewer-box spectro-section">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <span class="viewer-title" style="color:#ff9f43;">🌈 Spectrograms</span>
+                    <button class="spectro-toggle" id="spectroToggle" onclick="toggleSpectrograms()">Show
+                        Spectrograms</button>
+                </div>
+                <div class="spectro-grid" id="spectroGrid" style="display:none;">
+                    <div class="spectro-box">
+                        <div class="spectro-label">Input Spectrogram</div>
+                        <canvas id="spectroIn"></canvas>
+                    </div>
+                    <div class="spectro-box">
+                        <div class="spectro-label">Output Spectrogram</div>
+                        <canvas id="spectroOut"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════════════════ -->
+    <script>
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  STATE
+           ═══════════════════════════════════════════════════════════════════════ */
+        let signalData = null;  // { signal, time, sr, n_samples, duration }
+        let outputSignal = null;
+        let settings = null;    // loaded from ecg_mode.json
+        let gains = [];
+        let isPlaying = false, position = 0, speed = 1, animId = null;
+        let lastFrameTime = null;  // for time-based smooth scrolling
+        let windowSize = 2000;  // samples to show
+        let freqScale = 'linear';
+        let freqMaxHz = Infinity;  // max frequency to show (Hz) – updated on signal load
+        let cachedFreqs = null, cachedInMag = null, cachedOutMag = null;
+        let cachedIsWavelet = false, cachedLevelLabels = null;
+        let spectrogramsVisible = false;
+        let currentTransform = 'fourier';
+        let audioCtx = null, audioSource = null, audioPlaying = { input: false, output: false };
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  CHARTS INIT
+           ═══════════════════════════════════════════════════════════════════════ */
+        const chartOpts = (title) => ({
+            responsive: true, maintainAspectRatio: false, animation: false,
+            interaction: { mode: 'nearest', intersect: false },
+            plugins: {
+                legend: { display: false },
+                decimation: { enabled: true, algorithm: 'lttb', samples: 800, threshold: 800 },
+                zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy', drag: { enabled: false } }, pan: { enabled: false } }
+            },
+            parsing: false,
+            scales: {
+                x: { type: 'linear', grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666', maxTicksLimit: 10, callback: v => v.toFixed(2) }, title: { display: true, text: 'Time (s)', color: '#666' } },
+                y: { type: 'linear', grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Amplitude', color: '#666' } }
+            }
+        });
+
+        let inputChart = new Chart(document.getElementById('inputChart').getContext('2d'), {
+            type: 'line', data: { datasets: [] }, options: chartOpts('Input')
+        });
+        attachPan(inputChart);
+
+        let outputChart = new Chart(document.getElementById('outputChart').getContext('2d'), {
+            type: 'line', data: { datasets: [] }, options: chartOpts('Output')
+        });
+        attachPan(outputChart);
+
+        let freqChart = new Chart(document.getElementById('freqChart').getContext('2d'), {
+            type: 'line', data: { labels: [], datasets: [] },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false,
+                plugins: {
+                    legend: { labels: { color: '#ccc', font: { size: 10 } } },
+                    zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' }, pan: { enabled: false } }
+                },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Frequency (Hz)', color: '#888' } },
+                    y: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Magnitude', color: '#888' } }
+                }
+            }
+        });
+        attachPan(freqChart);
+
+        /* ── Synchronize viewers ───────────────────────────────────────────────── */
+        function syncCharts(source, target) {
+            target.options.scales.x.min = source.scales.x.min;
+            target.options.scales.x.max = source.scales.x.max;
+            target.options.scales.y.min = source.scales.y.min;
+            target.options.scales.y.max = source.scales.y.max;
+            target.update('none');
+        }
+
+        // Hook zoom events to sync
+        inputChart.options.plugins.zoom.zoom.onZoomComplete = ({ chart }) => syncCharts(chart, outputChart);
+        outputChart.options.plugins.zoom.zoom.onZoomComplete = ({ chart }) => syncCharts(chart, inputChart);
+
+        // Hook pan (mousemove during drag) to sync
+        const origInputMove = inputChart.canvas.parentElement;
+        inputChart.canvas.addEventListener('mousemove', () => { if (inputChart.canvas.style.cursor === 'grabbing') requestAnimationFrame(() => syncCharts(inputChart, outputChart)); });
+        outputChart.canvas.addEventListener('mousemove', () => { if (outputChart.canvas.style.cursor === 'grabbing') requestAnimationFrame(() => syncCharts(outputChart, inputChart)); });
+        inputChart.canvas.addEventListener('dblclick', () => setTimeout(() => syncCharts(inputChart, outputChart), 50));
+        outputChart.canvas.addEventListener('dblclick', () => setTimeout(() => syncCharts(outputChart, inputChart), 50));
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  ZOOM CONTROLS
+           ═══════════════════════════════════════════════════════════════════════ */
+        function getChart(which) { return which === 'input' ? inputChart : outputChart; }
+        function zoomIn(which) { const c = getChart(which); c.zoom(1.2); syncCharts(c, getChart(which === 'input' ? 'output' : 'input')); }
+        function zoomOut(which) { const c = getChart(which); c.zoom(0.8); syncCharts(c, getChart(which === 'input' ? 'output' : 'input')); }
+        function resetZoom(which) {
+            inputChart.resetZoom(); outputChart.resetZoom();
+            inputChart.options.scales.x.min = inputChart.options.scales.x.max = undefined;
+            inputChart.options.scales.y.min = inputChart.options.scales.y.max = undefined;
+            outputChart.options.scales.x.min = outputChart.options.scales.x.max = undefined;
+            outputChart.options.scales.y.min = outputChart.options.scales.y.max = undefined;
+            inputChart.update('none'); outputChart.update('none');
+        }
+        function setZoomAxis(which, mode, btn) {
+            const wrap = btn.closest('.axis-btns');
+            wrap.querySelectorAll('.axis-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const c = getChart(which);
+            c.options.plugins.zoom.zoom.mode = mode;
+            c.update('none');
+        }
+
+        /* ── Frequency chart zoom controls ─────────────────────────────────── */
+        function freqZoomIn() { freqChart.zoom(1.2); }
+        function freqZoomOut() { freqChart.zoom(0.8); }
+        function freqResetZoom() {
+            freqChart.resetZoom();
+            freqChart.options.scales.x.min = freqChart.options.scales.x.max = undefined;
+            freqChart.options.scales.y.min = freqChart.options.scales.y.max = undefined;
+            freqChart.update('none');
+        }
+        function setFreqZoomAxis(mode, btn) {
+            const wrap = btn.closest('.axis-btns');
+            wrap.querySelectorAll('.axis-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            freqChart.options.plugins.zoom.zoom.mode = mode;
+            freqChart.update('none');
+        }
+
+        /* ── Reset Equalizer ───────────────────────────────────────────────── */
+        function resetEqualizer() {
+            if (!settings || !settings.sliders) return;
+            settings.sliders.forEach((s, i) => {
+                const def = s.default_gain || 1.0;
+                gains[i] = def;
+                document.getElementById(`gain-val-${i}`).textContent = def.toFixed(2);
+                const slider = document.querySelectorAll('#slidersContainer .slider-group input[type="range"]')[i];
+                if (slider) slider.value = def;
+            });
+            applyEqualization();
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  LOAD SETTINGS
+           ═══════════════════════════════════════════════════════════════════════ */
+        async function loadDefaultSettings() {
+            try {
+                const res = await fetch('/api/settings/default');
+                const data = await res.json();
+                if (data.success) {
+                    settings = data.settings;
+                    buildSliders();
+                }
+            } catch (e) { console.error('Failed to load settings:', e); }
+        }
+
+        function buildSliders() {
+            if (!settings || !settings.sliders) return;
+            const container = document.getElementById('slidersContainer');
+            container.innerHTML = '';
+            gains = [];
+            // Also restore transform if saved
+            if (settings.transform) {
+                currentTransform = settings.transform;
+                document.getElementById('transformSelect').value = currentTransform;
+            }
+            settings.sliders.forEach((s, i) => {
+                // Prefer current_gain (from saved file) over default_gain
+                const gainVal = s.current_gain != null ? s.current_gain : (s.default_gain || 1.0);
+                gains.push(gainVal);
+                const color = s.color || '#00d4ff';
+                const rangeStr = s.ranges.map(r => `${r[0]}–${r[1]} Hz`).join(', ');
+                container.innerHTML += `
+                <div class="slider-group">
+                    <label>
+                        <span style="color:${color};">● ${s.name}</span>
+                        <span class="val" id="gain-val-${i}">${gainVal.toFixed(2)}</span>
+                    </label>
+                    <input type="range" min="0" max="2" step="0.01" value="${gainVal}"
+                        style="accent-color:${color}"
+                        oninput="setGain(${i}, this.value)">
+                    <div class="slider-desc">${s.description || ''}<br>Freq: ${rangeStr}</div>
+                </div>`;
+            });
+        }
+
+        function setGain(index, value) {
+            gains[index] = parseFloat(value);
+            document.getElementById(`gain-val-${index}`).textContent = parseFloat(value).toFixed(2);
+            // Thumb color
+            applyEqualization();
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  FILE LOADING
+           ═══════════════════════════════════════════════════════════════════════ */
+        async function loadFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            document.getElementById('infoBar').textContent = 'Loading...';
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const res = await fetch('/api/upload', { method: 'POST', body: formData });
+                const data = await res.json();
+                if (data.success) {
+                    signalData = data;
+                    outputSignal = [...data.signal];
+                    onSignalLoaded();
+                } else {
+                    document.getElementById('infoBar').textContent = 'Error: ' + data.error;
+                }
+            } catch (e) {
+                document.getElementById('infoBar').textContent = 'Upload failed: ' + e.message;
+            }
+        }
+
+
+        function onSignalLoaded() {
+            // Set window size to ~4 seconds like the reference project
+            const initWindowSec = Math.min(2, signalData.duration);
+            windowSize = Math.floor(signalData.sr * initWindowSec);
+            position = 0;
+
+            // Configure window slider
+            const ws = document.getElementById('windowSlider');
+            const minW = Math.max(0.5, parseFloat((signalData.duration / 40).toFixed(2)));
+            ws.min = minW;
+            ws.max = signalData.duration.toFixed(1);
+            ws.value = initWindowSec;
+            document.getElementById('windowVal').textContent = initWindowSec.toFixed(1) + 's';
+
+            document.getElementById('posSlider').max = Math.max(0, signalData.n_samples - windowSize);
+            document.getElementById('posSlider').value = 0;
+            document.getElementById('infoBar').textContent =
+                `${signalData.sr} Hz · ${signalData.duration.toFixed(1)}s · ${signalData.n_samples} samples`;
+            // Configure freq window slider based on Nyquist
+            const nyquist = signalData.sr / 2;
+            const fws = document.getElementById('freqWindowSlider');
+            fws.min = 5;
+            fws.max = nyquist;
+            fws.step = Math.max(1, Math.round(nyquist / 100));
+            fws.value = nyquist;
+            freqMaxHz = nyquist;
+            document.getElementById('freqWindowVal').textContent = nyquist + ' Hz';
+
+            updateViewers();
+            applyEqualization();
+        }
+
+        function setWindowSize(val) {
+            if (!signalData) return;
+            const sec = parseFloat(val);
+            windowSize = Math.min(Math.floor(signalData.sr * sec), signalData.n_samples);
+            document.getElementById('windowVal').textContent = sec.toFixed(1) + 's';
+            const posMax = Math.max(0, signalData.n_samples - windowSize);
+            document.getElementById('posSlider').max = posMax;
+            if (position > posMax) { position = posMax; document.getElementById('posSlider').value = position; }
+            updateViewers();
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  EQUALIZATION
+           ═══════════════════════════════════════════════════════════════════════ */
+        let eqTimeout = null;
+        function applyEqualization() {
+            if (!signalData || !settings) return;
+            clearTimeout(eqTimeout);
+            eqTimeout = setTimeout(async () => {
+                try {
+                    console.log('Equalizing with transform:', currentTransform, 'gains:', gains);
+                    const res = await fetch('/api/equalize', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            gains: gains,
+                            transform: currentTransform,
+                            sliders: settings.sliders
+                        })
+                    });
+                    const data = await res.json();
+                    console.log('Equalize response:', data.success, 'output length:', data.output ? data.output.length : 0, 'freqs:', data.frequencies ? data.frequencies.length : 0);
+                    if (data.success) {
+                        outputSignal = data.output;
+                        updateViewers();
+                        updateFreqChart(
+                            data.is_wavelet ? data.level_labels : data.frequencies,
+                            data.input_magnitude,
+                            data.output_magnitude,
+                            data.is_wavelet,
+                            data.level_labels
+                        );
+                        if (spectrogramsVisible) updateSpectrograms();
+                    } else {
+                        console.error('Equalization error from server:', data.error);
+                    }
+                } catch (e) { console.error('Equalization failed:', e); }
+            }, 150);
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  UPDATE VIEWERS  — linear x-axis with {x,y} data + native decimation
+           ═══════════════════════════════════════════════════════════════════════ */
+        function updateViewers() {
+            if (!signalData) return;
+            const start = Math.floor(position);
+            const end = Math.min(start + windowSize, signalData.n_samples);
+
+            // Build {x, y} point arrays — Chart.js decimation plugin handles the rest
+            const inData = [];
+            const outData = [];
+            const outSrc = outputSignal ? outputSignal : signalData.signal;
+            for (let i = start; i < end; i++) {
+                const x = signalData.time[i];
+                inData.push({ x, y: signalData.signal[i] });
+                outData.push({ x, y: outSrc[i] });
+            }
+
+            // Set explicit x-axis bounds for smooth left-scrolling
+            const xMin = signalData.time[start];
+            const windowSec = windowSize / signalData.sr;
+            const xMax = xMin + windowSec;
+
+            inputChart.data.labels = undefined;
+            inputChart.data.datasets = [{
+                label: 'Input', data: inData,
+                borderColor: '#00d4ff', borderWidth: 1.5,
+                pointRadius: 0, fill: false,
+                tension: 0,
+                indexAxis: 'x'
+            }];
+            inputChart.options.scales.x.min = xMin;
+            inputChart.options.scales.x.max = xMax;
+            inputChart.update('none');
+
+            outputChart.data.labels = undefined;
+            outputChart.data.datasets = [{
+                label: 'Output', data: outData,
+                borderColor: '#26de81', borderWidth: 1.5,
+                pointRadius: 0, fill: false,
+                tension: 0,
+                indexAxis: 'x'
+            }];
+            outputChart.options.scales.x.min = xMin;
+            outputChart.options.scales.x.max = xMax;
+            outputChart.update('none');
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  FREQUENCY CHART
+           ═══════════════════════════════════════════════════════════════════════ */
+        function updateFreqChart(freqs, inMag, outMag, isWavelet, levelLabels) {
+            if (!freqs || !freqs.length) return;
+            // Cache for slider re-render
+            cachedFreqs = freqs; cachedInMag = inMag; cachedOutMag = outMag;
+            cachedIsWavelet = !!isWavelet; cachedLevelLabels = levelLabels || null;
+
+            if (isWavelet) {
+                // ── Wavelet mode: bar chart of coefficient magnitudes per level ──
+                // Destroy existing chart and recreate as bar type
+                freqChart.destroy();
+                freqChart = new Chart(document.getElementById('freqChart').getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: levelLabels,
+                        datasets: [
+                            {
+                                label: 'Input Magnitude',
+                                data: inMag,
+                                backgroundColor: 'rgba(0, 212, 255, 0.6)',
+                                borderColor: '#00d4ff',
+                                borderWidth: 1,
+                                borderRadius: 4
+                            },
+                            {
+                                label: 'Output Magnitude',
+                                data: outMag,
+                                backgroundColor: 'rgba(38, 222, 129, 0.6)',
+                                borderColor: '#26de81',
+                                borderWidth: 1,
+                                borderRadius: 4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: {
+                            legend: { labels: { color: '#ccc', font: { size: 10 } } },
+                            zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' }, pan: { enabled: false } }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: 'rgba(255,255,255,0.06)' },
+                                ticks: { color: '#aaa', font: { size: 10 }, maxRotation: 45, minRotation: 20 },
+                                title: { display: true, text: 'Wavelet Decomposition Level', color: '#888' }
+                            },
+                            y: {
+                                grid: { color: 'rgba(255,255,255,0.06)' },
+                                ticks: { color: '#666' },
+                                title: { display: true, text: 'RMS Magnitude', color: '#888' },
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+                attachPan(freqChart);
+                return;
+            }
+
+            // ── FFT mode: line chart ──
+            // If previous was bar chart, recreate as line
+            if (freqChart.config.type !== 'line') {
+                freqChart.destroy();
+                freqChart = new Chart(document.getElementById('freqChart').getContext('2d'), {
+                    type: 'line', data: { labels: [], datasets: [] },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: {
+                            legend: { labels: { color: '#ccc', font: { size: 10 } } },
+                            zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' }, pan: { enabled: false } }
+                        },
+                        scales: {
+                            x: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Frequency (Hz)', color: '#888' } },
+                            y: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Magnitude', color: '#888' } }
+                        }
+                    }
+                });
+                attachPan(freqChart);
+            }
+
+
+            if (freqScale === 'audiogram') {
+                // Audiogram: true logarithmic x-axis with standard audiometric frequencies
+                const audioFreqs = [125, 250, 500, 750, 1000, 1500, 2000, 3000, 4000, 6000, 8000];
+                const inD = [], outD = [];
+                audioFreqs.forEach(af => {
+                    // Find nearest frequency bin
+                    let minDist = Infinity, idx = 0;
+                    for (let i = 0; i < freqs.length; i++) {
+                        const d = Math.abs(freqs[i] - af);
+                        if (d < minDist) { minDist = d; idx = i; }
+                    }
+                    inD.push({ x: af, y: inMag[idx] });
+                    outD.push({ x: af, y: outMag[idx] });
+                });
+
+                // Destroy and recreate with logarithmic x-axis
+                freqChart.destroy();
+                freqChart = new Chart(document.getElementById('freqChart').getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        datasets: [
+                            { label: 'Input', data: inD, borderColor: '#00d4ff', borderWidth: 1.5, pointRadius: 3, fill: false, tension: 0 },
+                            { label: 'Output', data: outD, borderColor: '#26de81', borderWidth: 1.5, pointRadius: 3, fill: false, tension: 0 }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        parsing: false,
+                        plugins: {
+                            legend: { labels: { color: '#ccc', font: { size: 10 } } },
+                            zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' }, pan: { enabled: false } }
+                        },
+                        scales: {
+                            x: {
+                                type: 'logarithmic',
+                                min: 100,
+                                max: 10000,
+                                grid: { color: 'rgba(255,255,255,0.06)' },
+                                ticks: {
+                                    color: '#666',
+                                    callback: function (val) {
+                                        if ([125, 250, 500, 1000, 2000, 4000, 8000].includes(val)) return val + ' Hz';
+                                        return '';
+                                    },
+                                    autoSkip: false,
+                                    maxRotation: 0
+                                },
+                                title: { display: true, text: 'Frequency (Audiogram Scale)', color: '#888' }
+                            },
+                            y: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Magnitude', color: '#888' } }
+                        }
+                    }
+                });
+                attachPan(freqChart);
+                return;
+            }
+
+            // ── Linear mode ──
+            // If previous chart was logarithmic or bar, recreate as linear line chart
+            if (freqChart.config.type !== 'line' || (freqChart.options.scales.x && freqChart.options.scales.x.type === 'logarithmic')) {
+                freqChart.destroy();
+                freqChart = new Chart(document.getElementById('freqChart').getContext('2d'), {
+                    type: 'line', data: { labels: [], datasets: [] },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: {
+                            legend: { labels: { color: '#ccc', font: { size: 10 } } },
+                            zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' }, pan: { enabled: false } }
+                        },
+                        scales: {
+                            x: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Frequency (Hz)', color: '#888' } },
+                            y: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Magnitude', color: '#888' } }
+                        }
+                    }
+                });
+                attachPan(freqChart);
+            }
+
+            let labels = [], inD = [], outD = [];
+            for (let i = 0; i < freqs.length; i++) {
+                if (freqs[i] > freqMaxHz) break;
+                labels.push(freqs[i].toFixed(1));
+                inD.push(inMag[i]);
+                outD.push(outMag[i]);
+            }
+
+            freqChart.data.labels = labels;
+            freqChart.data.datasets = [
+                { label: 'Input', data: inD, borderColor: '#00d4ff', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0 },
+                { label: 'Output', data: outD, borderColor: '#26de81', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0 }
+            ];
+            freqChart.options.scales.x.title.text = 'Frequency (Hz)';
+            freqChart.update('none');
+        }
+
+        function setFreqScale(scale, btn) {
+            freqScale = scale;
+            btn.parentElement.querySelectorAll('.scale-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            applyEqualization(); // re-fetch & redraw
+        }
+
+        function setFreqWindow(val) {
+            freqMaxHz = parseFloat(val);
+            document.getElementById('freqWindowVal').textContent = freqMaxHz + ' Hz';
+            if (cachedFreqs) updateFreqChart(cachedFreqs, cachedInMag, cachedOutMag, cachedIsWavelet, cachedLevelLabels);
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  SPECTROGRAMS
+           ═══════════════════════════════════════════════════════════════════════ */
+        function toggleSpectrograms() {
+            spectrogramsVisible = !spectrogramsVisible;
+            const grid = document.getElementById('spectroGrid');
+            const btn = document.getElementById('spectroToggle');
+            grid.style.display = spectrogramsVisible ? 'grid' : 'none';
+            btn.textContent = spectrogramsVisible ? 'Hide Spectrograms' : 'Show Spectrograms';
+            btn.classList.toggle('active', spectrogramsVisible);
+            if (spectrogramsVisible) updateSpectrograms();
+        }
+
+        async function updateSpectrograms() {
+            if (!signalData) return;
+            try {
+                const [resIn, resOut] = await Promise.all([
+                    fetch('/api/spectrogram?which=input'),
+                    fetch('/api/spectrogram?which=output')
+                ]);
+                const dataIn = await resIn.json();
+                const dataOut = await resOut.json();
+                if (dataIn.success) drawSpectrogram('spectroIn', dataIn);
+                if (dataOut.success) drawSpectrogram('spectroOut', dataOut);
+            } catch (e) { console.error('Spectrogram failed:', e); }
+        }
+
+        function drawSpectrogram(canvasId, data) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            const nFreq = data.frequencies.length;
+            const nTime = data.times.length;
+
+            // Layout: margins for axis labels
+            const marginLeft = 55, marginBottom = 35, marginTop = 5, marginRight = 10;
+            const dispW = canvas.clientWidth || 500;
+            const dispH = canvas.clientHeight || 200;
+            canvas.width = dispW;
+            canvas.height = dispH;
+
+            const plotW = dispW - marginLeft - marginRight;
+            const plotH = dispH - marginTop - marginBottom;
+
+            // Find min/max for color mapping
+            let gMin = Infinity, gMax = -Infinity;
+            for (let f = 0; f < nFreq; f++) {
+                for (let t = 0; t < nTime; t++) {
+                    const v = data.magnitudes[f][t];
+                    if (v < gMin) gMin = v;
+                    if (v > gMax) gMax = v;
+                }
+            }
+            const range = gMax - gMin || 1;
+
+            // Viridis colormap
+            const viridis = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+            function viridisColor(val) {
+                val = Math.max(0, Math.min(1, val));
+                const idx = val * (viridis.length - 1);
+                const lo = Math.floor(idx);
+                const hi = Math.min(lo + 1, viridis.length - 1);
+                const frac = idx - lo;
+                return [
+                    Math.round(viridis[lo][0] * (1 - frac) + viridis[hi][0] * frac),
+                    Math.round(viridis[lo][1] * (1 - frac) + viridis[hi][1] * frac),
+                    Math.round(viridis[lo][2] * (1 - frac) + viridis[hi][2] * frac)
+                ];
+            }
+
+            // Draw spectrogram pixels into an offscreen canvas
+            const imgCanvas = document.createElement('canvas');
+            imgCanvas.width = nTime;
+            imgCanvas.height = nFreq;
+            const imgCtx = imgCanvas.getContext('2d');
+            const imgData = imgCtx.createImageData(nTime, nFreq);
+            for (let f = 0; f < nFreq; f++) {
+                for (let t = 0; t < nTime; t++) {
+                    const v = (data.magnitudes[nFreq - 1 - f][t] - gMin) / range;
+                    const px = (f * nTime + t) * 4;
+                    const c = viridisColor(v);
+                    imgData.data[px] = c[0];
+                    imgData.data[px + 1] = c[1];
+                    imgData.data[px + 2] = c[2];
+                    imgData.data[px + 3] = 255;
+                }
+            }
+            imgCtx.putImageData(imgData, 0, 0);
+
+            // Clear canvas and draw the spectrogram scaled into the plot area
+            ctx.fillStyle = '#0f0c29';
+            ctx.fillRect(0, 0, dispW, dispH);
+            ctx.drawImage(imgCanvas, marginLeft, marginTop, plotW, plotH);
+
+            // ── Axis ticks & labels ──────────────────────────────────────
+            ctx.fillStyle = '#aaa';
+            ctx.strokeStyle = '#666';
+            ctx.lineWidth = 1;
+
+            // X-axis: Time ticks
+            ctx.font = '11px Segoe UI, sans-serif';
+            ctx.textAlign = 'center';
+            const nXTicks = 6;
+            const tMin = data.times[0], tMax = data.times[data.times.length - 1];
+            for (let i = 0; i <= nXTicks; i++) {
+                const frac = i / nXTicks;
+                const x = marginLeft + frac * plotW;
+                const tVal = tMin + frac * (tMax - tMin);
+                ctx.beginPath(); ctx.moveTo(x, marginTop + plotH); ctx.lineTo(x, marginTop + plotH + 4); ctx.stroke();
+                ctx.fillText(tVal.toFixed(1), x, marginTop + plotH + 16);
+            }
+            // X-axis title
+            ctx.font = '12px Segoe UI, sans-serif';
+            ctx.fillStyle = '#888';
+            ctx.fillText('Time (s)', marginLeft + plotW / 2, dispH - 2);
+
+            // Y-axis: Frequency ticks
+            ctx.fillStyle = '#aaa';
+            ctx.font = '11px Segoe UI, sans-serif';
+            ctx.textAlign = 'right';
+            const nYTicks = 5;
+            const fMin = data.frequencies[0], fMax = data.frequencies[data.frequencies.length - 1];
+            for (let i = 0; i <= nYTicks; i++) {
+                const frac = i / nYTicks;
+                const y = marginTop + plotH - frac * plotH;
+                const fVal = fMin + frac * (fMax - fMin);
+                ctx.beginPath(); ctx.moveTo(marginLeft, y); ctx.lineTo(marginLeft - 4, y); ctx.stroke();
+                ctx.fillText(fVal.toFixed(0), marginLeft - 6, y + 4);
+            }
+            // Y-axis title (rotated)
+            ctx.save();
+            ctx.translate(12, marginTop + plotH / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.textAlign = 'center';
+            ctx.font = '12px Segoe UI, sans-serif';
+            ctx.fillStyle = '#888';
+            ctx.fillText('Frequency (Hz)', 0, 0);
+            ctx.restore();
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  PLAYBACK
+           ═══════════════════════════════════════════════════════════════════════ */
+        function play() {
+            if (!signalData) return;
+            isPlaying = true;
+            lastFrameTime = null;  // reset so first frame calculates no jump
+            document.getElementById('statusPill').textContent = '🔴 Playing';
+            document.getElementById('statusPill').className = 'status-pill playing';
+            animId = requestAnimationFrame(animate);
+        }
+        function pause() {
+            isPlaying = false;
+            lastFrameTime = null;
+            document.getElementById('statusPill').textContent = '⏸ Paused';
+            document.getElementById('statusPill').className = 'status-pill paused';
+            if (animId) { cancelAnimationFrame(animId); animId = null; }
+        }
+        function stop() {
+            pause();
+            position = 0;
+            document.getElementById('posSlider').value = 0;
+            updateViewers();
+            updateTimeDisplay();
+        }
+        function resetPlayback() {
+            stop();
+            resetZoom('input');
+        }
+        function setPosition(val) {
+            position = parseInt(val);
+            updateViewers();
+            updateTimeDisplay();
+        }
+        function setSpeed(val) {
+            speed = parseFloat(val);
+            document.getElementById('speedVal').textContent = speed.toFixed(1) + '×';
+        }
+        function animate(timestamp) {
+            if (!isPlaying || !signalData) return;
+            if (lastFrameTime === null) {
+                // First frame after play/resume — just record the time, don't jump
+                lastFrameTime = timestamp;
+                animId = requestAnimationFrame(animate);
+                return;
+            }
+            // Time-based smooth scrolling: advance by real elapsed time
+            const elapsedSec = (timestamp - lastFrameTime) / 1000;
+            lastFrameTime = timestamp;
+            // Move by exactly (elapsed real seconds × speed) worth of samples
+            const step = elapsedSec * signalData.sr * speed;
+            position += step;
+            const maxPos = Math.max(0, signalData.n_samples - windowSize);
+            if (position >= maxPos) { position = 0; lastFrameTime = null; }
+            document.getElementById('posSlider').value = Math.floor(position);
+            updateViewers();
+            updateTimeDisplay();
+            animId = requestAnimationFrame(animate);
+        }
+        function updateTimeDisplay() {
+            if (!signalData) return;
+            document.getElementById('timeDisplay').textContent =
+                `${(Math.floor(position) / signalData.sr).toFixed(2)}s / ${signalData.duration.toFixed(2)}s`;
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  AUDIO PLAYBACK
+           ═══════════════════════════════════════════════════════════════════════ */
+        function toggleAudio(which) {
+            const btnId = which === 'input' ? 'audioInBtn' : 'audioOutBtn';
+            const btn = document.getElementById(btnId);
+
+            if (audioPlaying[which]) {
+                // Stop
+                if (audioSource) { try { audioSource.stop(); } catch (e) { } }
+                audioPlaying[which] = false;
+                btn.textContent = '🔊 Play Audio';
+                btn.classList.remove('playing');
+                return;
+            }
+
+            // Play
+            btn.textContent = '⏹ Stop Audio';
+            btn.classList.add('playing');
+            audioPlaying[which] = true;
+
+            const audio = new Audio(`/api/audio?which=${which}&t=${Date.now()}`);
+            audio.play();
+            audio.onended = () => {
+                audioPlaying[which] = false;
+                btn.textContent = '🔊 Play Audio';
+                btn.classList.remove('playing');
+            };
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  TRANSFORM & SETTINGS
+           ═══════════════════════════════════════════════════════════════════════ */
+        function onTransformChange() {
+            currentTransform = document.getElementById('transformSelect').value;
+            applyEqualization();
+        }
+
+        function loadSettingsFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                try {
+                    const parsed = JSON.parse(e.target.result);
+                    settings = parsed;
+                    buildSliders();
+                    applyEqualization();
+                } catch (err) {
+                    alert('Invalid settings file: ' + err.message);
+                }
+            };
+            reader.readAsText(file);
+            // Reset input so re-uploading the same file triggers change
+            event.target.value = '';
+        }
+
+        function saveSettings() {
+            if (!settings) { alert('No settings loaded yet.'); return; }
+            const toSave = JSON.parse(JSON.stringify(settings));
+            toSave.sliders.forEach((s, i) => { s.current_gain = gains[i]; });
+            toSave.transform = currentTransform;
+
+            // Create a text file and trigger browser download
+            const text = JSON.stringify(toSave, null, 2);
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'ecg_settings.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        /* ═══════════════════════════════════════════════════════════════════════
+           ██  INIT
+           ═══════════════════════════════════════════════════════════════════════ */
+        loadDefaultSettings();
+    </script>
+</body>
+
+</html>
