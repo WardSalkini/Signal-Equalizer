@@ -777,6 +777,7 @@
         let freqScale = 'linear';
         let freqMaxHz = Infinity;  // max frequency to show (Hz) – updated on signal load
         let cachedFreqs = null, cachedInMag = null, cachedOutMag = null;
+        let cachedIsWavelet = false, cachedLevelLabels = null;
         let spectrogramsVisible = false;
         let currentTransform = 'fourier';
         let audioCtx = null, audioSource = null, audioPlaying = { input: false, output: false };
@@ -1041,7 +1042,13 @@
                     if (data.success) {
                         outputSignal = data.output;
                         updateViewers();
-                        updateFreqChart(data.frequencies, data.input_magnitude, data.output_magnitude);
+                        updateFreqChart(
+                            data.is_wavelet ? data.level_labels : data.frequencies,
+                            data.input_magnitude,
+                            data.output_magnitude,
+                            data.is_wavelet,
+                            data.level_labels
+                        );
                         if (spectrogramsVisible) updateSpectrograms();
                     } else {
                         console.error('Equalization error from server:', data.error);
@@ -1101,16 +1108,90 @@
         /* ═══════════════════════════════════════════════════════════════════════
            ██  FREQUENCY CHART
            ═══════════════════════════════════════════════════════════════════════ */
-        function updateFreqChart(freqs, inMag, outMag) {
+        function updateFreqChart(freqs, inMag, outMag, isWavelet, levelLabels) {
             if (!freqs || !freqs.length) return;
             // Cache for slider re-render
             cachedFreqs = freqs; cachedInMag = inMag; cachedOutMag = outMag;
+            cachedIsWavelet = !!isWavelet; cachedLevelLabels = levelLabels || null;
 
-            let labels, inD, outD;
+            if (isWavelet) {
+                // ── Wavelet mode: bar chart of coefficient magnitudes per level ──
+                // Destroy existing chart and recreate as bar type
+                freqChart.destroy();
+                freqChart = new Chart(document.getElementById('freqChart').getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: levelLabels,
+                        datasets: [
+                            {
+                                label: 'Input Magnitude',
+                                data: inMag,
+                                backgroundColor: 'rgba(0, 212, 255, 0.6)',
+                                borderColor: '#00d4ff',
+                                borderWidth: 1,
+                                borderRadius: 4
+                            },
+                            {
+                                label: 'Output Magnitude',
+                                data: outMag,
+                                backgroundColor: 'rgba(38, 222, 129, 0.6)',
+                                borderColor: '#26de81',
+                                borderWidth: 1,
+                                borderRadius: 4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: {
+                            legend: { labels: { color: '#ccc', font: { size: 10 } } },
+                            zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' }, pan: { enabled: false } }
+                        },
+                        scales: {
+                            x: {
+                                grid: { color: 'rgba(255,255,255,0.06)' },
+                                ticks: { color: '#aaa', font: { size: 10 }, maxRotation: 45, minRotation: 20 },
+                                title: { display: true, text: 'Wavelet Decomposition Level', color: '#888' }
+                            },
+                            y: {
+                                grid: { color: 'rgba(255,255,255,0.06)' },
+                                ticks: { color: '#666' },
+                                title: { display: true, text: 'RMS Magnitude', color: '#888' },
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+                attachPan(freqChart);
+                return;
+            }
+
+            // ── FFT mode: line chart ──
+            // If previous was bar chart, recreate as line
+            if (freqChart.config.type !== 'line') {
+                freqChart.destroy();
+                freqChart = new Chart(document.getElementById('freqChart').getContext('2d'), {
+                    type: 'line', data: { labels: [], datasets: [] },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: {
+                            legend: { labels: { color: '#ccc', font: { size: 10 } } },
+                            zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' }, pan: { enabled: false } }
+                        },
+                        scales: {
+                            x: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Frequency (Hz)', color: '#888' } },
+                            y: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Magnitude', color: '#888' } }
+                        }
+                    }
+                });
+                attachPan(freqChart);
+            }
+
+
             if (freqScale === 'audiogram') {
-                // Audiogram: logarithmic frequency axis, standard audiometric frequencies
+                // Audiogram: true logarithmic x-axis with standard audiometric frequencies
                 const audioFreqs = [125, 250, 500, 750, 1000, 1500, 2000, 3000, 4000, 6000, 8000];
-                labels = []; inD = []; outD = [];
+                const inD = [], outD = [];
                 audioFreqs.forEach(af => {
                     // Find nearest frequency bin
                     let minDist = Infinity, idx = 0;
@@ -1118,21 +1199,79 @@
                         const d = Math.abs(freqs[i] - af);
                         if (d < minDist) { minDist = d; idx = i; }
                     }
-                    if (freqs[idx] <= (signalData.sr / 2)) {
-                        labels.push(af + ' Hz');
-                        inD.push(inMag[idx]);
-                        outD.push(outMag[idx]);
+                    inD.push({ x: af, y: inMag[idx] });
+                    outD.push({ x: af, y: outMag[idx] });
+                });
+
+                // Destroy and recreate with logarithmic x-axis
+                freqChart.destroy();
+                freqChart = new Chart(document.getElementById('freqChart').getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        datasets: [
+                            { label: 'Input', data: inD, borderColor: '#00d4ff', borderWidth: 1.5, pointRadius: 3, fill: false, tension: 0 },
+                            { label: 'Output', data: outD, borderColor: '#26de81', borderWidth: 1.5, pointRadius: 3, fill: false, tension: 0 }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        parsing: false,
+                        plugins: {
+                            legend: { labels: { color: '#ccc', font: { size: 10 } } },
+                            zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' }, pan: { enabled: false } }
+                        },
+                        scales: {
+                            x: {
+                                type: 'logarithmic',
+                                min: 100,
+                                max: 10000,
+                                grid: { color: 'rgba(255,255,255,0.06)' },
+                                ticks: {
+                                    color: '#666',
+                                    callback: function (val) {
+                                        if ([125, 250, 500, 1000, 2000, 4000, 8000].includes(val)) return val + ' Hz';
+                                        return '';
+                                    },
+                                    autoSkip: false,
+                                    maxRotation: 0
+                                },
+                                title: { display: true, text: 'Frequency (Audiogram Scale)', color: '#888' }
+                            },
+                            y: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Magnitude', color: '#888' } }
+                        }
                     }
                 });
-            } else {
-                // Linear: clip to freqMaxHz
-                labels = []; inD = []; outD = [];
-                for (let i = 0; i < freqs.length; i++) {
-                    if (freqs[i] > freqMaxHz) break;
-                    labels.push(freqs[i].toFixed(1));
-                    inD.push(inMag[i]);
-                    outD.push(outMag[i]);
-                }
+                attachPan(freqChart);
+                return;
+            }
+
+            // ── Linear mode ──
+            // If previous chart was logarithmic or bar, recreate as linear line chart
+            if (freqChart.config.type !== 'line' || (freqChart.options.scales.x && freqChart.options.scales.x.type === 'logarithmic')) {
+                freqChart.destroy();
+                freqChart = new Chart(document.getElementById('freqChart').getContext('2d'), {
+                    type: 'line', data: { labels: [], datasets: [] },
+                    options: {
+                        responsive: true, maintainAspectRatio: false, animation: false,
+                        plugins: {
+                            legend: { labels: { color: '#ccc', font: { size: 10 } } },
+                            zoom: { zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' }, pan: { enabled: false } }
+                        },
+                        scales: {
+                            x: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Frequency (Hz)', color: '#888' } },
+                            y: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#666' }, title: { display: true, text: 'Magnitude', color: '#888' } }
+                        }
+                    }
+                });
+                attachPan(freqChart);
+            }
+
+            let labels = [], inD = [], outD = [];
+            for (let i = 0; i < freqs.length; i++) {
+                if (freqs[i] > freqMaxHz) break;
+                labels.push(freqs[i].toFixed(1));
+                inD.push(inMag[i]);
+                outD.push(outMag[i]);
             }
 
             freqChart.data.labels = labels;
@@ -1140,7 +1279,7 @@
                 { label: 'Input', data: inD, borderColor: '#00d4ff', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0 },
                 { label: 'Output', data: outD, borderColor: '#26de81', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0 }
             ];
-            freqChart.options.scales.x.title.text = freqScale === 'audiogram' ? 'Frequency (Audiogram Scale)' : 'Frequency (Hz)';
+            freqChart.options.scales.x.title.text = 'Frequency (Hz)';
             freqChart.update('none');
         }
 
@@ -1154,7 +1293,7 @@
         function setFreqWindow(val) {
             freqMaxHz = parseFloat(val);
             document.getElementById('freqWindowVal').textContent = freqMaxHz + ' Hz';
-            if (cachedFreqs) updateFreqChart(cachedFreqs, cachedInMag, cachedOutMag);
+            if (cachedFreqs) updateFreqChart(cachedFreqs, cachedInMag, cachedOutMag, cachedIsWavelet, cachedLevelLabels);
         }
 
         /* ═══════════════════════════════════════════════════════════════════════
